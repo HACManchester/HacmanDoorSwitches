@@ -1,4 +1,4 @@
-# HacmanDoorSwitches
+# HacmanDoorSwitches :star2:
 Code for the NodeMCU to report Doorbell, Override, and state
 
 ### Switch Pins
