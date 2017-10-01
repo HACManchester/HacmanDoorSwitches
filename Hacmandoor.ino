@@ -76,9 +76,10 @@ void setup_wifi() {
 
   while (WiFi.status() != WL_CONNECTED) {
     digitalWrite(STATUS_PIN, HIGH); 
-    delay(500);
+    delay(100);
     digitalWrite(STATUS_PIN, LOW); 
     Serial.print(".");
+    delay(100);
   }
 
   Serial.println("");
@@ -96,7 +97,7 @@ void reconnect() {
     Serial.print("Attempting MQTT connection...");
     digitalWrite(STATUS_PIN, HIGH); 
     // Attempt to connect
-    if (client.connect("ESP8266Client", "system/keysensor/state", 1, true, "online")) {
+    if (client.connect("ESP8266Client", "system/keysensor/state", 2, true, "online")) {
       Serial.println("connected");
       // Once connected, publish an announcement...
       client.publish("system/keysensor/state", "online");
