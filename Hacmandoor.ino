@@ -1,5 +1,6 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+
 typedef void (*GeneralMessageFunction) ();
 
 
@@ -121,6 +122,7 @@ public:
   }
 };
 
+
 //WiFi Details
 const char* ssid = "";
 const char* password = "";
@@ -156,6 +158,7 @@ int value = 0;
 
 void setup() {
 
+
   pinMode(OVERRIDE_PIN, INPUT_PULLUP); 
   pinMode(DOORBELL_PIN, INPUT_PULLUP); 
   pinMode(DOOR_PIN, INPUT_PULLUP);
@@ -169,7 +172,7 @@ void setup() {
   doorbellDebounce.init();
   overrideDebounce.init();
   auxDebounce.init();
-  
+ 
   //Do the dance
   Serial.begin(115200);
   setup_wifi();
@@ -206,6 +209,7 @@ void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
+
     // Attempt to connect
     if (client.connect("ESP8266Client", "system/keysensor/state", 2, true, "offline")) {
       Serial.println("connected");
@@ -256,6 +260,3 @@ void loop() {
   }
 
 }
-
-
-
