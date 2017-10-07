@@ -121,7 +121,7 @@ void loop() {
   }
   client.loop();
   if (ohfuck) {
-    client.publish("door/outer/opened/username", "MANUAL OVERRIDE KEY");
+    client.publish("door/outer/opened/key", "");
     ohfuck = 0;
     chirp();
   }
