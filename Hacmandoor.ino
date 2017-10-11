@@ -1,36 +1,154 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
+typedef void (*GeneralMessageFunction) ();
+
+
+/**
+ * Chirp Class manages emitting a chirp on the speaker for a given pin, length and frequency 
+ */
+class Chirp {
+  private:
+    int _chirpUntil = 0;
+    int _chirpFrequency;
+    int _chirpPin;
+    int _chirpTime;
+    int _ledPin;
+    
+  public:
+    Chirp(int pin, int t, int frequency, int ledPin =-1) : _chirpFrequency(frequency),  _chirpPin(pin), _chirpTime(t), _ledPin(ledPin) {}
+    
+    virtual void set() {
+      _chirpUntil = millis() + _chirpTime;
+      tone(_chirpPin, _chirpFrequency); 
+      if(_ledPin > -1) { digitalWrite(_ledPin, HIGH);}
+    }
+
+    virtual void loop(){
+      if(millis() > _chirpUntil) {
+        noTone(_chirpPin);
+        if(_ledPin > -1) { digitalWrite(_ledPin, LOW);}
+      }
+      
+    }  
+};
+
+/**
+ * StatusLED manages flashing an LED at a set interval to indicate life, or lack thereof.
+ */
+class StatusLED {
+  private:
+    int _on;
+    int _off;
+    int _pin;
+    int _thisOn; 
+    int _thisOff;
+
+  public:
+    StatusLED(int pin, int on, int off) : _off(off), _on(on), _pin(pin) {}
+
+    virtual void loop() {
+      if (millis() < _thisOn){
+        digitalWrite(_pin, HIGH);
+      }else{
+        digitalWrite(_pin, LOW);
+      }
+
+      if(millis() > _thisOff) {
+        _thisOn = millis() + _on;
+        _thisOff = millis() + _on + _off;
+      }
+
+    }
+
+};
+
+/**
+ * Debounces a button. 
+ * Given a pin of the input, a state that the button desires to be in, debounce, and then a retry delay
+ * Pin = the pin of the button/input
+ * DesireState = what state the debounce should activate
+ * Debounce = ms the input must be in desire state before register
+ * Retry = ms that the button is no longer active after an activtion
+ * 
+ */
+class Debounce {
+private:
+  int _pin;
+  int _desireState;
+  int _debounce;
+  int _retry;
+  int _prevState;
+  int _fired;
+  int _thisState;
+  int _thisDebounce;
+  int _thisRetry;
+
+public:
+  Debounce(int pin, int desireState, int debounce, int retry) : _pin(pin), _desireState(desireState), _debounce(debounce), _retry(retry) {}
+  
+  virtual void init(){
+    _prevState = digitalRead(_pin);  
+    _fired = 0;
+  }
+  
+  virtual bool loop() {
+
+    _thisState = digitalRead(_pin);
+    
+    if(_thisState == _desireState){
+
+      if(_thisState != _prevState && (millis() > _thisRetry)){
+        Serial.println("Updating");
+        _prevState = _thisState;
+        _thisDebounce = millis() + _debounce;
+        _thisRetry = millis() + _debounce + _retry;
+      }
+
+      //in the disired state
+      if(millis() < _thisDebounce){Serial.println("not yet"); return false;}
+      if(millis() > _thisRetry) {Serial.println("too far"); return false;}
+
+      if(_fired) return false;
+      
+      _fired = 1;
+      return true;
+
+    }else{
+      if(millis() < _thisRetry){_thisDebounce = 0; _thisRetry = 0; _fired = 0;}
+      _prevState = _thisState;
+      return false;
+    }
+  }
+};
+
+
 //WiFi Details
 const char* ssid = "";
 const char* password = "";
 const char* mqtt_server = "172.16.0.5";
 
-//Pin Information
-const int OVERRIDE_PIN = 5; //D1
-const int DOORBELL_PIN = 2; //D4
-const int STATE_PIN = 4; //D2
-const int BUZZER_PIN = 0; //D3
-const int STATUS_PIN = 14; // D5
+//Pin Details
+const int NUM_PINS = 7;
+const int pins [NUM_PINS] = {5,2,4,0,14,12,13 };
 
-//Indicators of an event we care about
-volatile int ohfuck = 0; //Override 
-volatile int ohhello = 0; //Doorbell
+//State variables
+volatile int doorState = 0;
 
-//Flags for when the override is triggered - flashing light without delay
-volatile int shitFlag = 0;
-const int shitFlagReset = 1000000;
-volatile int shitFlagCount = 0;
-int ledState = LOW;
+//Nice names 
+const int OVERRIDE_PIN = pins[0];
+const int DOORBELL_PIN = pins[1];
+const int DOOR_PIN = pins[2];
+const int WARNLED_PIN = pins[3];
+const int STATUS_PIN = pins[4];
+const int SOUNDER_PIN = pins[5];
+const int AUX_PIN = pins[6];
 
-//Normal flashing light
-unsigned long previousMillis = 0;        // will store last time LED was updated
-const long interval = 400; 
-
-
-unsigned volatile long lastOverride = 0;
-unsigned volatile long lastDoorbell = 0;
-unsigned volatile long doorState = 0;
+Chirp chirp(SOUNDER_PIN, 900, 900, WARNLED_PIN);
+StatusLED statusLED(STATUS_PIN, 80, 800);
+Debounce doorbellDebounce(DOORBELL_PIN, LOW, 50, 5000);
+Debounce overrideDebounce(OVERRIDE_PIN, LOW, 50, 2000);
+Debounce auxDebounce(AUX_PIN, LOW, 1000, 5000);
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -39,23 +157,22 @@ char msg[50];
 int value = 0;
 
 void setup() {
-  //Set up pins
-  pinMode(OVERRIDE_PIN, INPUT_PULLUP); // D1 input - override
-  pinMode(DOORBELL_PIN, INPUT_PULLUP); // D2 Input - doorbell
-  pinMode(STATE_PIN, INPUT_PULLUP); // D3 input - open sensor
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(STATUS_PIN, OUTPUT);
 
-  //Indicate system is alive
-  digitalWrite(BUZZER_PIN, LOW); 
-  digitalWrite(STATUS_PIN, HIGH); 
-  delay(3000);
-  digitalWrite(STATUS_PIN, LOW); 
 
-  //Set up interrupts
-  attachInterrupt(digitalPinToInterrupt(OVERRIDE_PIN), ohshit, RISING);
-  attachInterrupt(digitalPinToInterrupt(DOORBELL_PIN), ohhi, RISING);
+  pinMode(OVERRIDE_PIN, INPUT_PULLUP); 
+  pinMode(DOORBELL_PIN, INPUT_PULLUP); 
+  pinMode(DOOR_PIN, INPUT_PULLUP);
+  pinMode(AUX_PIN, INPUT_PULLUP);
+     
+  pinMode(WARNLED_PIN, OUTPUT); 
+  pinMode(STATUS_PIN, OUTPUT); 
+  pinMode(SOUNDER_PIN, OUTPUT); 
 
+
+  doorbellDebounce.init();
+  overrideDebounce.init();
+  auxDebounce.init();
+ 
   //Do the dance
   Serial.begin(115200);
   setup_wifi();
@@ -75,10 +192,10 @@ void setup_wifi() {
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(STATUS_PIN, HIGH); 
-    delay(100);
-    digitalWrite(STATUS_PIN, LOW); 
+    digitalWrite(WARNLED_PIN, HIGH);
     Serial.print(".");
+    delay(100);
+    digitalWrite(WARNLED_PIN, LOW);
     delay(100);
   }
 
@@ -86,21 +203,18 @@ void setup_wifi() {
   Serial.println("WiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
-  digitalWrite(STATUS_PIN, HIGH); 
-  delay(500);
-  digitalWrite(STATUS_PIN, LOW); 
 }
 
 void reconnect() {
   // Loop until we're reconnected
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    digitalWrite(STATUS_PIN, HIGH); 
+
     // Attempt to connect
-    if (client.connect("ESP8266Client", "system/keysensor/state", 2, true, "online")) {
+    if (client.connect("ESP8266Client", "system/keysensor/state", 2, true, "offline")) {
       Serial.println("connected");
       // Once connected, publish an announcement...
-      client.publish("system/keysensor/state", "online");
+      client.publish("system/keysensor/state", "online", true);
       delay(1000);
     } else {
       Serial.print("failed, rc=");
@@ -109,95 +223,40 @@ void reconnect() {
       // Wait 5 seconds before retrying
       delay(5000);
     }
-    digitalWrite(STATUS_PIN, LOW); 
   }
 }
 
-
 void loop() {
 
-  if (!client.connected()) {
-    reconnect();
-  }
+  if (!client.connected()) reconnect();
   client.loop();
-  if (ohfuck) {
-    client.publish("door/outer/opened/key", "");
-    ohfuck = 0;
-    chirp();
-  }
-  if (ohhello) {
+  chirp.loop();
+  statusLED.loop();
+  
+  
+  if(doorbellDebounce.loop()){
     client.publish("door/outer/doorbell", "");
-    ohhello = 0;
-    chirp();
+    chirp.set();
   }
 
-  int live_door_state = digitalRead(STATE_PIN);
+  if(overrideDebounce.loop()){
+    client.publish("door/outer/opened/key", "");
+    chirp.set();
+  }
+
+  if(auxDebounce.loop()){
+    client.publish("door/outer/aux", "");
+    chirp.set();
+  }
+
+  
+  int live_door_state = digitalRead(DOOR_PIN);
   if(live_door_state != doorState){
     Serial.println("DOOR STATE");
     Serial.println(live_door_state);
     client.publish("door/outer/state", live_door_state?"opened":"closed");
     doorState = live_door_state;
-    chirp();
+    chirp.set();
   }
 
-  
-  
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= interval) {
-    // save the last time you blinked the LED
-    previousMillis = currentMillis;
-
-    // if the LED is off turn it on and vice-versa:
-    if (ledState == LOW) {
-      ledState = HIGH;
-      digitalWrite(STATUS_PIN, HIGH);
-      delay(10);
-      digitalWrite(STATUS_PIN, LOW);
-    } else {
-      ledState = LOW;
-    }
-    if(shitFlag) digitalWrite(BUZZER_PIN, ledState);
-    
-  }
-
-  if(shitFlag){
-    shitFlagCount ++;
-  
-    if(shitFlagCount > shitFlagReset){
-      shitFlag = 0;
-      shitFlagCount = 0; 
-      digitalWrite(BUZZER_PIN, LOW); 
-    }
-  }
 }
-
-// Called when an override happens on the switch
-void ohshit() {
-  Serial.println("OVERRIDE");
-  unsigned long now = millis();
-  if (now - lastOverride >= 1000) {
-    ohfuck = 1;
-    shitFlag = 1;
-    lastOverride = now;
-  }
-}
-
-//Called when the doorbell is rung
-void ohhi() {
-  Serial.println("DOORBELL"); 
-  unsigned long now = millis();
-  if (now - lastDoorbell >= 5000) {
-    ohhello = 1;
-    lastDoorbell = now;
-  }
-}
-
-//Flashes the buzzer pin to indicate a thing happened
-void chirp() {
-  Serial.println("chirp");
-  digitalWrite(BUZZER_PIN, HIGH); 
-  delay(500);
-  digitalWrite(BUZZER_PIN, LOW); 
-}
-
